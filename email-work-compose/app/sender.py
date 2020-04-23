@@ -1,28 +1,48 @@
 import psycopg2
-from bottle import route, run, request
+import redis
+import json
+import os
+from bottle import Bottle, request
 
-DNS = 'dbname=email_sender user=postgres password=12345 host=db'
-SQL = 'INSERT INTO emails (assunto,mensagem) VALUES (%s, %s)'
+class Sender(Bottle):
+    def __init__(self):
+        super().__init__()
+        self.route('/', method='POST', callback=self.send)
+        redis_host = os.getenv('REDIS_HOST', 'queue')
+        redis_port = os.getenv('REDIS_PORT', 6379)
+        self.fila = redis.StrictRedis(host=redis_host, port=redis_port, db=0)
 
-def register_message(assunto, mensgem):
-    conn = psycopg2.connect(DNS)
-    cur = conn.cursor()
-    cur.execute(SQL, (assunto,mensgem))
-    conn.commit()
-    cur.close()
-    conn.close()
+        db_host = os.getenv('DB_HOST', 'db')
+        db_user = os.getenv('DB_USER', 'postgres')
+        db_pass = os.getenv('DB_PASS', '12345')
+        db_name = os.getenv('DB_NAME', 'sender')
+        dsn = f'dbname={db_name} user={db_user} password={db_pass} host={db_host}'
 
-    print('Mensagem registrada !')
+        DNS = 'dbname=email_sender user=postgres password=12345 host=db'
+        self.conn = psycopg2.connect(DNS)
 
-@route('/', method='POST')
-def send():
-    assunto = request.forms.get('assunto')
-    mensagem = request.forms.get('mensagem')
+    def register_message(self, assunto, mensgem):
+        SQL = 'INSERT INTO emails (assunto,mensagem) VALUES (%s, %s)'
+        cur = self.conn.cursor()
+        cur.execute(SQL, (assunto,mensgem))
+        self.conn.commit()
+        cur.close()
 
-    register_message(assunto,mensagem)
-    return 'Mensagem enfileirada ! Assunto: {} Mensagem: {}'.format(
-        assunto, mensagem
-    )
+        msg = {'assunto':assunto, 'mensagem':mensgem}
+        self.fila.rpush('sender', json.dumps(msg))         
+
+        print('Mensagem registrada !')
+
+    
+    def send(self):
+        assunto = request.forms.get('assunto')
+        mensagem = request.forms.get('mensagem')
+
+        self.register_message(assunto,mensagem)
+        return 'Mensagem enfileirada ! Assunto: {} Mensagem: {}'.format(
+            assunto, mensagem
+        )   
 
 if __name__ == '__main__':
-    run(host='0.0.0.0', port=8080, debug=True)
+    sender = Sender()
+    sender.run(host='0.0.0.0', port=8080, debug=True)
